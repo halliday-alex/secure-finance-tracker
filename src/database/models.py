@@ -19,7 +19,7 @@ class User(Base):
     transactions = relationship("Transaction",back_populates="owner", cascade="all,delete-orphan")
     budgets = relationship("Budget",back_populates="owner",cascade="all,delete-orphan")
 
-class Transactions(Base):
+class Transaction(Base):
     """
     The Transaction Table: Supports main dashboard list and expenses charts.
     """

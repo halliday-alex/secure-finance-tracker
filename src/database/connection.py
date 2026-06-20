@@ -14,7 +14,7 @@ DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NA
 #creates database engine
 engine = create_engine(DATABASE_URL)
 #creates session factory. Everytime a user requests or saves data, this gives them an isolated session.
-SessionLocal = sessionmaker(autocomit=False, autoflush=False, bind=engine)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 #base class for future tables (Users, transactions) will inherit from
 Base = declarative_base()
 # A helper function safely opens database connections and guarentees closes when done

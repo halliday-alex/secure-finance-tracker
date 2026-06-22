@@ -3,9 +3,13 @@ from fastapi import FastAPI , Depends, HTTPException, status
 from src.database.connection import engine , Base , SessionLocal #engine is the bridge to postgres, Base is database blueprint metadata.
 from src.database import models  #import  models file so SQLAlchemy is aware of users, transactions, budgets
 from sqlalchemy.orm import Session
-from src.security.encryption import hash_password
-from src.schemas import UserCreate, UserResponse
+from src.security.encryption import hash_password , verify_password, create_access_token, SECRET_KEY, ALGORITHM
+from src.schemas import UserCreate, UserResponse , UserLogin, TokenResponse, TransactionCreate, TransactionResponse
 from src.database.models import User
+from src.security.data_encryption import encrypt_data, decrypt_data
+import json
+import jwt
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 # Initialise database tables
 Base.metadata.create_all(bind=engine)
 
@@ -46,3 +50,78 @@ def register_user(user_data: UserCreate, db: Session=Depends(get_db)):
     db.commit()
     db.refresh(new_user)
     return new_user
+
+@app.post("/auth/login", response_model=TokenResponse)
+def login_user(user_data: UserLogin, db: Session = Depends(get_db)):
+    # Look up the identity target record
+    user = db.query(models.User).filter(models.User.email == user_data.email).first()
+    # Defensive Mitigation: If user does not exist, through exception
+    #Prevents user enumeration where attacker maps out registered emails.
+
+    generic_exception = HTTPException(status_code = status.HTTP_401_UNAUTHORIZED,detail = "Incorrect email or password.",
+                                      headers={"WWW-Authenticate":"Bearer"},)
+    if not user:
+        raise generic_exception
+    # Cryptographically verify the password string against database hash
+    if not verify_password(user_data.password, user.hashed_password):
+        raise generic_exception
+    #Issue the secure authorisation token
+    token_payload = {"sub": str(user.id), "email":user.email}
+    jwt_access_token = create_access_token(data= token_payload)
+
+    return {"access_token": jwt_access_token, "token_type": "bearer"}
+
+# Configure FastAPI to recognise bearer authentication tokens in request headers
+security_bearer = HTTPBearer()
+def get_current_user_id(credentials: HTTPAuthorizationCredentials = Depends(security_bearer)) -> int:
+    """
+    Security Dependency: Decodes JWT, validats authenticity and returns user identity.
+    """
+    credentials_exception = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                                          detail="Could not validate session credentials.",
+                                          headers={"WWW-Authenticate":"Bearer"},)
+    try:
+        token = credentials.credentials
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id: str = payload.get("sub")
+        if user_id is None:
+            raise credentials_exception
+        return int(user_id)
+    except jwt.PyJWTError:
+        raise credentials_exception
+    
+    # Protected Transactions route
+@app.post("/transactions",response_model=TransactionResponse, status_code=status.HTTP_201_CREATED)
+def create_transaction(
+    transaction_data: TransactionCreate,
+    db: Session = Depends(get_db),
+    current_user_id: int = Depends(get_current_user_id)
+):
+    # Isolate parameters and pack meta field into a JSON string block
+    financial_meta = {
+        "amount": transaction_data.amount,
+        "category": transaction_data.category
+    }
+    meta_json_string = json.dumps(financial_meta)
+
+    #Cryptographic Transformation Layer (AES-256 Encryption Application)
+
+    cipher_title = encrypt_data(transaction_data.title)
+    cipher_data = encrypt_data(meta_json_string)
+    
+    #Instantiate entity obkect matching schema
+    new_transaction = models.Transaction(
+        encrypted_title = cipher_title,
+        data_string=cipher_data,
+        user_id=current_user_id
+    )
+    db.add(new_transaction)
+    db.commit()
+    db.refresh(new_transaction)
+# decrypt to return a clean response to the authentication client
+    return TransactionResponse(
+        id=new_transaction.id,
+        title = decrypt_data(new_transaction.encrypted_title),
+        amount=financial_meta["amount"],
+        category=financial_meta["category"],
+        user_id=new_transaction.user_id)

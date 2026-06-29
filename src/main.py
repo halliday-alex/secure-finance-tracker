@@ -7,6 +7,7 @@ from src.security.encryption import hash_password , verify_password, create_acce
 from src.schemas import UserCreate, UserResponse , UserLogin, TokenResponse, TransactionCreate, TransactionResponse
 from src.database.models import User
 from src.security.data_encryption import encrypt_data, decrypt_data
+from typing import List
 import json
 import jwt
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -125,3 +126,29 @@ def create_transaction(
         amount=financial_meta["amount"],
         category=financial_meta["category"],
         user_id=new_transaction.user_id)
+    
+@app.get("/transactions",response_model= List[TransactionResponse])
+def get_user_transactions( db: Session = Depends(get_db),current_user_id: int = Depends(get_current_user_id)):
+    """
+    Protected Query Route: Retrives, decrypts and reconstructs transaction history exclusively for the authenticated user session
+    """
+    # Query only transaction belonging to the token holder
+    raw_transactions = db.query(models.Transaction).filter(models.Transaction.user_id == current_user_id).all()
+    print(f"--- DEBUG: Found {len(raw_transactions)} raw rows in DB for user_id {current_user_id} ---")
+    decrypted_history = []
+    # Sequential Decryption loop
+    for item in raw_transactions:
+        try:
+            #Decrypt title string
+            plaintext_title = decrypt_data(item.encrypted_title)
+
+            # Decrypt and unpack the metadata JSON strng back into a dictionary
+            plaintext_meta_string = decrypt_data(item.data_string)
+            financial_meta = json.loads(plaintext_meta_string)
+            # Reconstructs the expetted response schema object
+            decrypted_history.append(TransactionResponse(id=item.id, title = plaintext_title, amount = financial_meta["amount"],category=financial_meta["category"],user_id=item.user_id))
+        except Exception:
+            # Skip corrupted individual rows without crashing the whole feed
+            continue
+
+    return decrypted_history
